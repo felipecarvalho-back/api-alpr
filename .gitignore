@@ -1,0 +1,21 @@
+# Ambientes virtuais
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Modelos baixados e caches locais
+.EasyOCR/
+*.pt
+*.pth
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
