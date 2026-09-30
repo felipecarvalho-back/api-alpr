@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: api-reconhecimento-placas
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: ohio
+    healthCheckPath: /
+    envVars:
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRATION_MINUTES
+        value: "1440"
+      - key: TORCH_NUM_THREADS
+        value: "2"
+      - key: MAX_IMAGE_DIMENSION
+        value: "1280"
+      - key: EASYOCR_QUANTIZE
+        value: "True"

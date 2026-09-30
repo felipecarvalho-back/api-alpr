@@ -1,7 +1,7 @@
 """
-Exemplo de cliente para testar a API de deteccao de placas.
+Cliente de exemplo para testar a API de deteccao de placas veiculares com autenticacao JWT.
 Uso:
-    python test_client.py caminho/para/foto.jpg [url_da_api]
+    python test_client.py caminho/para/foto.jpg [url_da_api] [token_jwt_opcional]
 """
 import sys
 import os
@@ -11,10 +11,41 @@ import json
 import mimetypes
 
 
-def enviar_imagem(caminho_imagem: str, url_api: str = "http://localhost:8000/detectar-placa"):
+def obter_token_teste(base_url: str) -> str:
+    """Solicita um token de teste temporario ao endpoint /gerar-token."""
+    url_token = f"{base_url.rstrip('/')}/gerar-token"
+    dados = json.dumps({"identificador": "test-client", "expira_em_minutos": 60}).encode("utf-8")
+    req = urllib.request.Request(
+        url_token,
+        data=dados,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            resultado = json.loads(resp.read().decode("utf-8"))
+            return resultado.get("access_token", "")
+    except Exception as e:
+        print(f"Aviso: Nao foi possivel gerar token automatico: {e}")
+        return ""
+
+
+def enviar_imagem(
+    caminho_imagem: str,
+    url_api: str = "http://localhost:8000/detectar-placa",
+    token: str = ""
+):
     if not os.path.exists(caminho_imagem):
         print(f"Erro: Arquivo '{caminho_imagem}' nao foi encontrado.")
         return
+
+    # Se nao foi passado token, tenta gerar um token de teste na propria API
+    if not token:
+        base_url = "/".join(url_api.split("/")[:3])  # ex: http://localhost:8000
+        print("Obtendo token JWT de teste...")
+        token = obter_token_teste(base_url)
+        if token:
+            print("Token obtido com sucesso.")
 
     nome_arquivo = os.path.basename(caminho_imagem)
     mime_type = mimetypes.guess_type(caminho_imagem)[0] or "image/jpeg"
@@ -22,7 +53,7 @@ def enviar_imagem(caminho_imagem: str, url_api: str = "http://localhost:8000/det
     with open(caminho_imagem, "rb") as f:
         file_bytes = f.read()
 
-    # Monta payload multipart/form-data nativo (sem depender de libs externas no cliente)
+    # Monta payload multipart/form-data nativo
     boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
     body = bytearray()
     body.extend(f"--{boundary}\r\n".encode("utf-8"))
@@ -33,15 +64,15 @@ def enviar_imagem(caminho_imagem: str, url_api: str = "http://localhost:8000/det
     body.extend(file_bytes)
     body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
 
-    req = urllib.request.Request(
-        url_api,
-        data=body,
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "User-Agent": "PlacaTestClient/1.0"
-        },
-        method="POST"
-    )
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": "PlacaTestClient/2.0"
+    }
+
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = urllib.request.Request(url_api, data=body, headers=headers, method="POST")
 
     print(f"Enviando '{caminho_imagem}' para {url_api}...")
     try:
@@ -49,7 +80,9 @@ def enviar_imagem(caminho_imagem: str, url_api: str = "http://localhost:8000/det
             status_code = resp.getcode()
             response_data = json.loads(resp.read().decode("utf-8"))
             print(f"\nStatus: {status_code}")
-            print(json.dumps(response_data, indent=2, ensure_ascii=False))
+            print(f"Resposta JSON: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+            if "placa" in response_data:
+                print(f"\n>>> PLACA DETECTADA: {response_data['placa']} <<<\n")
     except urllib.error.HTTPError as e:
         print(f"\nErro HTTP {e.code}: {e.reason}")
         print(e.read().decode("utf-8"))
@@ -60,9 +93,10 @@ def enviar_imagem(caminho_imagem: str, url_api: str = "http://localhost:8000/det
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Uso: python test_client.py <caminho_da_imagem> [url_opcional]")
+        print("Uso: python test_client.py <caminho_da_imagem> [url_opcional] [token_jwt_opcional]")
         print("Exemplo: python test_client.py foto_carro.jpg")
     else:
         caminho = sys.argv[1]
-        url = sys.argv[2] if len(sys.argv) > 2 else "http://localhost:8000/detectar-placa"
-        enviar_imagem(caminho, url)
+        url = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2].startswith("http") else "http://localhost:8000/detectar-placa"
+        token_arg = sys.argv[3] if len(sys.argv) > 3 else (sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("http") else "")
+        enviar_imagem(caminho, url, token_arg)
