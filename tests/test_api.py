@@ -147,3 +147,17 @@ def test_detectar_placa_arquivo_nao_imagem():
         files={"file": ("arquivo.txt", b"texto qualquer", "text/plain")}
     )
     assert response.status_code == 400
+
+
+def test_cors_preflight():
+    response = client.options(
+        "/detectar-placa",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        }
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    assert "POST" in response.headers.get("access-control-allow-methods", "")
