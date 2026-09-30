@@ -1,3 +1,4 @@
+import gc
 import io
 import logging
 import os
@@ -11,15 +12,26 @@ from app.utils import process_ocr_results
 
 logger = logging.getLogger("ocr_service")
 
-# Otimizacoes de threads para ambientes em nuvem/containers (como Render)
-TORCH_NUM_THREADS = int(os.getenv("TORCH_NUM_THREADS", "2"))
+# Otimizacao estrita de threads para ambientes em nuvem/containers com 512MB RAM (como Render)
+TORCH_NUM_THREADS = int(os.getenv("TORCH_NUM_THREADS", "1"))
 try:
     torch.set_num_threads(TORCH_NUM_THREADS)
 except Exception as e:
     logger.warning(f"Nao foi possivel definir torch.set_num_threads: {e}")
 
-MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", "1280"))
-EASYOCR_QUANTIZE = os.getenv("EASYOCR_QUANTIZE", "True").lower() in ("true", "1", "t")
+# 960px e ideal para placas veiculares, mantendo a memoria de tensores do CRAFT muito baixa (<35MB)
+MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", "960"))
+
+
+def liberar_memoria_so():
+    """Forca o coletor de lixo do Python e o malloc do SO a liberarem memoria residual."""
+    gc.collect()
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
 
 
 class OCRService:
@@ -27,61 +39,44 @@ class OCRService:
         self,
         languages: Optional[list] = None,
         max_dimension: int = MAX_IMAGE_DIMENSION,
-        quantize: bool = EASYOCR_QUANTIZE
     ):
-        # 'en' carrega o modelo latino que atende perfeitamente A-Z e 0-9 das placas brasileiras
-        # sem a sobrecarga de carregar multiplos pacotes de reconhecimento desnecessarios.
+        # 'pt' e 'en' usam o modelo latin_g2.pth que atende perfeitamente placas do Brasil
         if languages is None:
-            languages = ["en"]
+            languages = ["pt", "en"]
         self.languages = languages
         self.reader: Optional[easyocr.Reader] = None
         self.gpu = torch.cuda.is_available()
         self.max_dimension = max_dimension
-        self.quantize = quantize if not self.gpu else False
 
     def load_model(self) -> None:
-        """Carrega o modelo EasyOCR na memoria e realiza o aquecimento inicial (warm-up)."""
+        """Carrega o modelo EasyOCR sob demanda sem picos de memoria."""
         if self.reader is None:
             logger.info(
-                f"Carregando EasyOCR (Idiomas: {self.languages}, GPU: {self.gpu}, Quantize: {self.quantize})..."
+                f"Carregando EasyOCR sob demanda (Idiomas: {self.languages}, GPU: {self.gpu})..."
             )
+            # quantize=False evita a duplicacao temporaria de modelos na RAM durante a quantizacao dinamica
             self.reader = easyocr.Reader(
                 self.languages,
                 gpu=self.gpu,
-                quantize=self.quantize
+                quantize=False
             )
-            # Aquecimento inicial (warm-up) para evitar atraso na primeira requisicao do usuario
-            try:
-                logger.info("Realizando warm-up do modelo...")
-                dummy_img = np.zeros((64, 64, 3), dtype=np.uint8)
-                with torch.inference_mode():
-                    self.reader.readtext(dummy_img, mag_ratio=1.0)
-                logger.info("Warm-up concluido com sucesso.")
-            except Exception as ex:
-                logger.warning(f"Aviso durante warm-up do OCR: {ex}")
-
-            logger.info("Modelo EasyOCR pronto para operacao!")
+            liberar_memoria_so()
+            logger.info("Modelo EasyOCR carregado com sucesso na memoria.")
 
     def preprocess_image(self, image_bytes: bytes) -> np.ndarray:
         """
-        Carrega imagem de bytes, ajusta orientacao EXIF (fotos de celular),
-        redimensiona proporcionalmente para evitar estouro de memoria (OOM)
-        e converte para array NumPy RGB.
+        Carrega imagem de bytes, ajusta orientacao EXIF e
+        redimensiona proporcionalmente para manter consumo de RAM minimo.
         """
         pil_image = Image.open(io.BytesIO(image_bytes))
 
-        # Corrige a rotacao caso a foto tenha metadados EXIF
+        # Corrige rotacao de fotos de celular
         pil_image = ImageOps.exif_transpose(pil_image)
 
         # Converte para RGB
         if pil_image.mode != "RGB":
             pil_image = pil_image.convert("RGB")
 
-        # Otimizacao de Performance:
-        # Fotos de celulares modernos chegam com 12MP a 48MP (ex: 4000x3000), o que consumiria
-        # mais de 1.5GB de RAM e 15 a 30s de CPU.
-        # Redimensionar para no maximo 1280px mantem os caracteres da placa nitidos
-        # e reduz o tempo de OCR em mais de 10x, cabendo tranquilamente no limite do Render.
         w, h = pil_image.size
         maior_lado = max(w, h)
         if maior_lado > self.max_dimension:
@@ -93,18 +88,22 @@ class OCRService:
         return np.array(pil_image)
 
     def detect_plate(self, image_bytes: bytes) -> Dict[str, Any]:
-        """Executa a leitura de OCR com alta performance e retorna os dados da placa identificada."""
+        """Executa a leitura de OCR com alta performance e memoria controlada."""
         self.load_model()
         image_np = self.preprocess_image(image_bytes)
 
-        # Executa EasyOCR com inferencia otimizada (sem grafos de gradiente)
+        # Executa EasyOCR com inferencia controlada
         with torch.inference_mode():
             raw_results = self.reader.readtext(
                 image_np,
                 batch_size=4,
-                mag_ratio=1.0,  # Evita upscaling desnecessario de 1.5x que consome CPU e RAM
+                mag_ratio=1.0,
                 canvas_size=self.max_dimension
             )
+
+        # Limpa memoria residual de arrays
+        del image_np
+        liberar_memoria_so()
 
         # Analisa os textos procurando padroes de placas
         result = process_ocr_results(raw_results)

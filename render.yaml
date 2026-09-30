@@ -14,8 +14,8 @@ services:
       - key: JWT_EXPIRATION_MINUTES
         value: "1440"
       - key: TORCH_NUM_THREADS
-        value: "2"
+        value: "1"
       - key: MAX_IMAGE_DIMENSION
-        value: "1280"
-      - key: EASYOCR_QUANTIZE
-        value: "True"
+        value: "960"
+      - key: MALLOC_ARENA_MAX
+        value: "2"

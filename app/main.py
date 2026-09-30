@@ -20,9 +20,7 @@ logger = logging.getLogger("api_placas")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Executa ao iniciar e ao encerrar a aplicacao."""
-    logger.info("Inicializando servidor e pre-carregando modelo EasyOCR...")
-    ocr_service.load_model()
-    logger.info("API pronta para receber requisicoes!")
+    logger.info("Servidor iniciado com sucesso. Porta liberada para conexoes!")
     yield
     logger.info("Encerrando API...")
 

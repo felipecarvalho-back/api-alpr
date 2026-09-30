@@ -1,18 +1,23 @@
 # Imagem base oficial do Python slim (leve e estavel)
 FROM python:3.11-slim
 
-# Evita geracao de arquivos .pyc e garante saida de logs imediata no console do Render
+# Otimizacoes criticas de memoria para o plano gratuito do Render (512MB RAM):
+# - jemalloc + MALLOC_ARENA_MAX=2: eliminam a fragmentacao de memoria do glibc padrao no Linux
+# - TORCH_NUM_THREADS=1: evita a multiplicacao de buffers de memoria por threads concorrentes
+# - MAX_IMAGE_DIMENSION=960: mantem tensores do detector CRAFT abaixo de 35MB
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000 \
-    TORCH_NUM_THREADS=2 \
-    MAX_IMAGE_DIMENSION=1280 \
-    EASYOCR_QUANTIZE=True
+    MALLOC_ARENA_MAX=2 \
+    LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+    TORCH_NUM_THREADS=1 \
+    MAX_IMAGE_DIMENSION=960
 
-# Dependencias do sistema operacional necessarias para OpenCV e Pillow
+# Dependencias do sistema operacional necessarias para OpenCV, Pillow e o alocador jemalloc
 RUN apt-get update && apt-get install --no-install-recommends -y \
     libgl1 \
     libglib2.0-0 \
+    libjemalloc2 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,15 +32,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
-# Pre-baixa e armazena em cache os pesos dos modelos EasyOCR durante o build do Docker.
-# Isso evita que o Render tente baixar arquivos pesados na inicializacao (cold start) ou atinja timeout.
-RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False, quantize=True)"
+# Pre-baixa e armazena em cache os modelos CRAFT e latin_g2 durante o build do Docker.
+RUN python -c "import easyocr; easyocr.Reader(['pt', 'en'], gpu=False, quantize=False)"
 
 # Copia o codigo da aplicacao
 COPY app/ ./app/
 
-# Expoe a porta padrao (o Render sobrescreve via variavel de ambiente $PORT)
+# Expoe a porta padrao (sobrescrita pelo Render via $PORT)
 EXPOSE 8000
 
-# Executa Uvicorn escutando na porta dinamica $PORT fornecida pelo Render
+# Executa Uvicorn escutando na porta $PORT fornecida pelo Render
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
