@@ -63,6 +63,32 @@ Você pode hospedar esta API no Render de duas formas:
 
 ---
 
+## ☁️ Como Hospedar no Modal (Serverless)
+
+O arquivo [`modal_app.py`](modal_app.py) permite hospedar a API de forma serverless com 2GB de RAM e inicialização automática:
+
+1. Instale a biblioteca do Modal:
+```bash
+pip install modal
+```
+
+2. Autentique seu ambiente com sua conta do Modal:
+```bash
+modal setup
+```
+
+3. Para testar em desenvolvimento com hot-reload na nuvem:
+```bash
+modal serve modal_app.py
+```
+
+4. Para fazer o deploy definitivo em produção:
+```bash
+modal deploy modal_app.py
+```
+
+---
+
 ## 🐳 Executando Localmente com Docker
 
 1. **Construir a imagem**:
