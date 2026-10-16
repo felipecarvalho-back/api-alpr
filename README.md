@@ -127,22 +127,33 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ## 📡 Endpoints da API
 
 ### 1. `POST /gerar-token`
-Gera um token JWT para testes ou integração.
+Gera um token JWT para testes ou integração. É possível gerar tokens temporários ou permanentes (infinitos).
 
 **Corpo da Requisição (opcional):**
 ```json
 {
   "identificador": "meu-app-mobile",
-  "expira_em_minutos": 1440
+  "expira_em_minutos": 1440,
+  "sem_expiracao": false
 }
 ```
+> **Dica para Token Infinito**: Para gerar um token que nunca expira, envie `"sem_expiracao": true` ou `"expira_em_minutos": 0`.
 
-**Resposta:**
+**Resposta (Token normal):**
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsIn...",
   "token_type": "bearer",
   "expira_em_minutos": 1440
+}
+```
+
+**Resposta (Token infinito / sem expiração):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsIn...",
+  "token_type": "bearer",
+  "expira_em_minutos": null
 }
 ```
 

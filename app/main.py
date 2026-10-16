@@ -58,13 +58,14 @@ class RespostaPlaca(BaseModel):
 
 class RequisicaoToken(BaseModel):
     identificador: Optional[str] = Field("app-client", description="Nome ou ID da aplicacao cliente")
-    expira_em_minutos: Optional[int] = Field(1440, description="Tempo de expiracao do token em minutos")
+    expira_em_minutos: Optional[int] = Field(1440, description="Tempo de expiracao em minutos. Se 0, gera token sem expiracao.")
+    sem_expiracao: Optional[bool] = Field(False, description="Se True, gera um token permanente/infinito sem expiracao")
 
 
 class RespostaToken(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    expira_em_minutos: int
+    expira_em_minutos: Optional[int] = Field(None, description="Tempo de expiracao em minutos. Retorna null se for infinito.")
 
 
 @app.get("/", summary="Status e Health Check da API")
@@ -84,10 +85,23 @@ async def root():
     description="Endpoint utilitario para gerar tokens JWT para uso nas requisicoes a API."
 )
 async def gerar_token(dados: Optional[RequisicaoToken] = None):
-    payload = {
-        "sub": dados.identificador if dados else "app-client"
-    }
-    minutos = dados.expira_em_minutos if dados and dados.expira_em_minutos else 1440
+    sub = dados.identificador if dados and dados.identificador else "app-client"
+    payload = {"sub": sub}
+
+    eh_infinito = False
+    if dados:
+        if dados.sem_expiracao or dados.expira_em_minutos == 0:
+            eh_infinito = True
+
+    if eh_infinito:
+        token = criar_token_acesso(payload, sem_expiracao=True)
+        return RespostaToken(
+            access_token=token,
+            token_type="bearer",
+            expira_em_minutos=None
+        )
+
+    minutos = dados.expira_em_minutos if (dados and dados.expira_em_minutos is not None) else 1440
     token = criar_token_acesso(payload, expira_em_minutos=minutos)
     return RespostaToken(
         access_token=token,

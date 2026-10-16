@@ -10,12 +10,17 @@ ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 DEFAULT_EXPIRATION_MINUTES = int(os.getenv("JWT_EXPIRATION_MINUTES", "1440"))  # 24 horas por padrao
 
 
-def criar_token_acesso(dados: Dict[str, Any], expira_em_minutos: Optional[int] = None) -> str:
-    """Gera um novo token JWT assinado."""
+def criar_token_acesso(
+    dados: Dict[str, Any],
+    expira_em_minutos: Optional[int] = None,
+    sem_expiracao: bool = False
+) -> str:
+    """Gera um novo token JWT assinado. Se sem_expiracao=True ou expira_em_minutos == 0, gera token infinito (sem data de expiracao)."""
     dados_para_codificar = dados.copy()
-    minutos = expira_em_minutos if expira_em_minutos is not None else DEFAULT_EXPIRATION_MINUTES
-    expiracao = datetime.now(timezone.utc) + timedelta(minutes=minutos)
-    dados_para_codificar.update({"exp": expiracao})
+    if not sem_expiracao and (expira_em_minutos is None or expira_em_minutos != 0):
+        minutos = expira_em_minutos if expira_em_minutos is not None else DEFAULT_EXPIRATION_MINUTES
+        expiracao = datetime.now(timezone.utc) + timedelta(minutes=minutos)
+        dados_para_codificar.update({"exp": expiracao})
     token = jwt.encode(dados_para_codificar, SECRET_KEY, algorithm=ALGORITHM)
     return token
 

@@ -35,6 +35,28 @@ def test_gerar_token():
     # Valida o token gerado
     payload = verificar_token(dados["access_token"])
     assert payload["sub"] == "test-app"
+    assert "exp" in payload
+
+
+def test_gerar_token_infinito():
+    # Teste via sem_expiracao=True
+    response = client.post("/gerar-token", json={"identificador": "test-infinito", "sem_expiracao": True})
+    assert response.status_code == 200
+    dados = response.json()
+    assert dados["expira_em_minutos"] is None
+    payload = verificar_token(dados["access_token"])
+    assert payload["sub"] == "test-infinito"
+    assert "exp" not in payload
+
+    # Teste via expira_em_minutos=0
+    response2 = client.post("/gerar-token", json={"identificador": "test-infinito-zero", "expira_em_minutos": 0})
+    assert response2.status_code == 200
+    dados2 = response2.json()
+    assert dados2["expira_em_minutos"] is None
+    payload2 = verificar_token(dados2["access_token"])
+    assert payload2["sub"] == "test-infinito-zero"
+    assert "exp" not in payload2
+
 
 
 def test_auth_sem_token():
