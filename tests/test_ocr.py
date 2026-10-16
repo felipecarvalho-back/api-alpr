@@ -39,3 +39,29 @@ def test_preprocess_image_small_not_upscaled():
     assert w == 600
     assert h == 400
     assert c == 3
+
+
+def test_fallback_plate_detection_trigger():
+    from unittest.mock import MagicMock
+    service = OCRService()
+    service.reader = MagicMock()
+
+    # Simula imagem vazia
+    img_np = np.zeros((300, 500, 3), dtype=np.uint8)
+
+    # Simula raw_results da primeira passada com leitura incompleta de 5 chars (ex: 'F34E2')
+    raw_results = [
+        ([[100, 100], [400, 100], [400, 200], [100, 200]], "F34E2", 0.35)
+    ]
+
+    # No fallback (crop esticado), o reader identifica a placa completa Mercosul
+    service.reader.readtext.return_value = [
+        ([[0, 0], [100, 0], [100, 50], [0, 50]], "FJB4E12", 0.88)
+    ]
+
+    resultado = service.fallback_plate_detection(img_np, raw_results)
+    assert resultado is not None
+    assert resultado["encontrada"] is True
+    assert resultado["placa"] == "FJB4E12"
+    assert resultado["padrao"] == "Mercosul"
+
