@@ -5,26 +5,34 @@ from typing import Dict, List, Optional, Tuple, Any
 REGEX_MERCOSUL = re.compile(r"[A-Z]{3}[0-9][A-Z][0-9]{2}")
 REGEX_ANTIGO = re.compile(r"[A-Z]{3}[0-9]{4}")
 
-# Mapeamentos para possiveis correcoes de OCR
+# Mapeamentos para possiveis correcoes de OCR (incluindo distorcoes de tela/camera)
 CHAR_TO_DIGIT = {
-    "O": "0", "o": "0",
-    "I": "1", "l": "1", "i": "1",
+    "O": "0", "o": "0", "Q": "0", "D": "0", "U": "0", "C": "0",
+    "I": "1", "l": "1", "i": "1", "L": "1", "J": "1",
     "Z": "2", "z": "2",
-    "B": "8",
+    "E": "3",
+    "A": "4", "H": "4",
     "S": "5", "s": "5",
-    "G": "6",
-    "A": "4",
+    "G": "6", "b": "6",
+    "T": "7", "Y": "7",
+    "B": "8", "R": "8",
+    "g": "9", "q": "9",
 }
 
 DIGIT_TO_CHAR = {
     "0": "O",
     "1": "I",
     "2": "Z",
-    "8": "B",
+    "3": "E",
+    "4": "A",
     "5": "S",
     "6": "G",
-    "4": "A",
+    "7": "T",
+    "8": "B",
 }
+
+# Palavras comuns em cabecalhos de placas que nao devem ser confundidas com a placa em si
+PALAVRAS_IGNORADAS = ("BRASIL", "MERCOSUL")
 
 
 def clean_text(text: str) -> str:
@@ -97,6 +105,15 @@ def extract_plate_from_text(raw_text: str) -> Optional[Tuple[str, str]]:
     Retorna (placa_limpa, padrao) ou None.
     """
     cleaned = clean_text(raw_text)
+    if not cleaned:
+        return None
+
+    # Remove palavras de cabecalho da placa caso estejam coladas ao texto lido
+    for palavra in PALAVRAS_IGNORADAS:
+        if cleaned == palavra:
+            return None
+        if palavra in cleaned and len(cleaned) > len(palavra):
+            cleaned = cleaned.replace(palavra, "")
 
     # 1. Busca direta por Mercosul
     match_mercosul = REGEX_MERCOSUL.search(cleaned)
@@ -112,6 +129,10 @@ def extract_plate_from_text(raw_text: str) -> Optional[Tuple[str, str]]:
     if len(cleaned) >= 7:
         for i in range(len(cleaned) - 6):
             chunk = cleaned[i:i + 7]
+
+            # Evita converter uma palavra 100% alfabetica (ex: nomes de cidades/estados) em placa
+            if chunk.isalpha():
+                continue
 
             # Testa hipotese Mercosul corrigida
             hypo_mercosul = fix_characters_by_position(chunk, is_mercosul=True)

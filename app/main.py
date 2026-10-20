@@ -1,9 +1,11 @@
+import io
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from app.auth import criar_token_acesso, validar_token_jwt
@@ -124,14 +126,8 @@ async def detectar_placa(
     file: UploadFile = File(..., description="Arquivo de imagem (JPEG, PNG, WEBP, etc.)"),
     token_valido: dict = Depends(validar_token_jwt)
 ):
-    # Valida se o arquivo enviado possui formato de imagem valido
     content_type = file.content_type or ""
     filename = file.filename or ""
-    if not (content_type.startswith("image/") or filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp"))):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="O arquivo enviado precisa ser uma imagem valida (JPEG, PNG, WEBP, etc.)."
-        )
 
     try:
         conteudo_imagem = await file.read()
@@ -141,11 +137,37 @@ async def detectar_placa(
                 detail="O arquivo de imagem enviado esta vazio."
             )
 
+        # Valida se os bytes realmente correspondem a uma imagem valida
+        # (suporta uploads diretos e repasses via Laravel/PHP temp files com application/octet-stream)
+        try:
+            with Image.open(io.BytesIO(conteudo_imagem)) as img_check:
+                img_check.verify()
+        except (UnidentifiedImageError, Exception):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="O arquivo enviado precisa ser uma imagem valida (JPEG, PNG, WEBP, etc.)."
+            )
+
+        logger.info(
+            f"Recebida imagem para analise: filename='{filename}', "
+            f"content_type='{content_type}', bytes={len(conteudo_imagem)}"
+        )
+
         resultado = ocr_service.detect_plate(conteudo_imagem)
 
         if resultado.get("encontrada") and resultado.get("placa"):
+            logger.info(
+                f"Placa detectada com sucesso: {resultado['placa']} "
+                f"(padrao={resultado.get('padrao')}, conf={resultado.get('confianca')}, "
+                f"dim={resultado.get('dimensoes_processadas')})"
+            )
             return RespostaPlaca(placa=resultado["placa"])
         else:
+            textos_lidos = [t.get("texto") for t in resultado.get("textos_encontrados", [])]
+            logger.warning(
+                f"Nenhuma placa valida identificada. Dimensoes={resultado.get('dimensoes_processadas')}, "
+                f"Textos brutos lidos pelo OCR={textos_lidos}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Nenhuma placa veicular valida foi identificada na imagem."

@@ -20,8 +20,8 @@ try:
 except Exception as e:
     logger.warning(f"Nao foi possivel definir torch.set_num_threads: {e}")
 
-# 960px e ideal para placas veiculares, mantendo a memoria de tensores do CRAFT muito baixa (<35MB)
-MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", "960"))
+# 1600px preserva excelente nitidez para fotos tiradas pelo celular (mesmo mais distantes ou de telas)
+MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", "1600"))
 
 
 def liberar_memoria_so():
@@ -84,9 +84,45 @@ class OCRService:
             escala = self.max_dimension / float(maior_lado)
             novo_w = max(1, int(w * escala))
             novo_h = max(1, int(h * escala))
-            pil_image = pil_image.resize((novo_w, novo_h), Image.Resampling.BILINEAR)
+            pil_image = pil_image.resize((novo_w, novo_h), Image.Resampling.LANCZOS)
 
         return np.array(pil_image)
+
+    @staticmethod
+    def apply_screen_enhancement(image_np: np.ndarray) -> np.ndarray:
+        """
+        Aplica filtro Anti-Moire (suavizacao de grade de pixels de monitor)
+        combinado com equalizacao adaptativa de contraste (CLAHE) para corrigir
+        estouro de luz / reflexo em fotos tiradas de telas de computador ou sob sol forte.
+        """
+        if image_np.ndim == 3:
+            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image_np.copy()
+
+        # Suaviza a malha de pixels do monitor (efeito Moire) preservando bordas das letras
+        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+
+        # Realca contraste localmente (corrige brilho estourado de telas)
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        enhanced = clahe.apply(blurred)
+
+        return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+
+    @staticmethod
+    def get_center_crop_zoom(image_np: np.ndarray) -> np.ndarray:
+        """
+        Recorta os 60% centrais da foto (onde o usuario mira a camera do celular)
+        e amplia em 1.4x com nitidez para placas que ficaram pequenas no enquadramento.
+        """
+        h, w = image_np.shape[:2]
+        y1, y2 = int(h * 0.20), int(h * 0.80)
+        x1, x2 = int(w * 0.15), int(w * 0.85)
+        crop = image_np[y1:y2, x1:x2]
+        ch, cw = crop.shape[:2]
+        if ch < 20 or cw < 20:
+            return image_np
+        return cv2.resize(crop, (int(cw * 1.4), int(ch * 1.4)), interpolation=cv2.INTER_CUBIC)
 
     def fallback_plate_detection(self, image_np: np.ndarray, raw_results: list) -> Optional[Dict[str, Any]]:
         """
@@ -106,21 +142,21 @@ class OCRService:
             bw = x_max - x_min
             bh = y_max - y_min
 
-            if bw < 30 or bh < 12:
+            if bw < 25 or bh < 10:
                 continue
 
             aspect_ratio = bw / float(bh)
             clean = "".join(c for c in str(text).upper() if c.isalnum())
 
-            # Considera suspeitas caixas com entre 3 e 8 caracteres ou com formato largo de placa
-            if not ((3 <= len(clean) <= 8) or (aspect_ratio >= 1.8)):
+            # Considera suspeitas caixas com entre 2 e 9 caracteres ou com formato largo de placa
+            if not ((2 <= len(clean) <= 9) or (aspect_ratio >= 1.5)):
                 continue
 
             cortes = [
                 # 1. Mercosul: corta 16% do topo (faixa azul) e 10px da esquerda (QR/BR)
                 (min(img_w - 20, x_min + 10), min(y_max - 10, y_min + int(bh * 0.16)), x_max, y_max, "mercosul_crop"),
-                # 2. Padrao antigo ou caixa integral
-                (max(0, x_min - 5), max(0, y_min - 5), min(img_w, x_max + 5), min(img_h, y_max + 5), "integral_crop"),
+                # 2. Padrao antigo ou caixa integral com margem
+                (max(0, x_min - 6), max(0, y_min - 6), min(img_w, x_max + 6), min(img_h, y_max + 6), "integral_crop"),
             ]
 
             for (cx1, cy1, cx2, cy2, modo) in cortes:
@@ -128,11 +164,16 @@ class OCRService:
                     continue
                 crop = image_np[cy1:cy2, cx1:cx2]
                 ch, cw = crop.shape[:2]
-                if ch < 12 or cw < 25:
+                if ch < 10 or cw < 25:
                     continue
 
                 # Esticamento horizontal para melhor separacao de caracteres no CRNN
-                crop_stretched = cv2.resize(crop, (int(cw * 1.35), ch), interpolation=cv2.INTER_CUBIC)
+                fator_y = 2.0 if ch < 35 else 1.0
+                crop_stretched = cv2.resize(
+                    crop,
+                    (int(cw * 1.35 * fator_y), int(ch * fator_y)),
+                    interpolation=cv2.INTER_CUBIC
+                )
 
                 with torch.inference_mode():
                     leituras = self.reader.readtext(
@@ -166,33 +207,90 @@ class OCRService:
             }
         return None
 
-    def detect_plate(self, image_bytes: bytes) -> Dict[str, Any]:
-        """Executa a leitura de OCR com alta performance e memoria controlada."""
-        self.load_model()
-        image_np = self.preprocess_image(image_bytes)
-
-        # Executa EasyOCR com inferencia controlada
+    def _run_ocr_pass(self, img_variant: np.ndarray, mag_ratio: float = 1.0) -> Dict[str, Any]:
+        """Executa uma passada completa (leitura direta + fallback de recorte) em uma variante da imagem."""
         with torch.inference_mode():
             raw_results = self.reader.readtext(
-                image_np,
+                img_variant,
                 batch_size=4,
-                mag_ratio=1.0,
+                mag_ratio=mag_ratio,
                 canvas_size=self.max_dimension
             )
 
-        # Analisa os textos procurando padroes de placas
         result = process_ocr_results(raw_results)
-
-        # Fallback inteligente se a deteccao direta nao encontrar placa valida
         if not result.get("encontrada"):
-            result_fallback = self.fallback_plate_detection(image_np, raw_results)
+            result_fallback = self.fallback_plate_detection(img_variant, raw_results)
             if result_fallback and result_fallback.get("encontrada"):
                 result_fallback["textos_encontrados"] = result.get("textos_encontrados", [])
-                result = result_fallback
+                return result_fallback
+
+        return result
+
+    def detect_plate(self, image_bytes: bytes) -> Dict[str, Any]:
+        """
+        Executa a leitura de OCR em multiplas etapas adaptativas:
+        1. Imagem original pre-processada
+        2. Filtro Anti-Moire + CLAHE (ideal para fotos tiradas da tela do PC pelo celular)
+        3. Zoom central + Anti-Moire (ideal quando a placa esta pequena no centro da foto do celular)
+        4. Rotacao 90° e 270° (caso o Laravel/Mobile tenha removido o EXIF de orientacao)
+        """
+        self.load_model()
+        image_np = self.preprocess_image(image_bytes)
+        h, w = image_np.shape[:2]
+
+        # Passada 1: Imagem original
+        result = self._run_ocr_pass(image_np, mag_ratio=1.0)
+        if result.get("encontrada"):
+            result["dimensoes_processadas"] = f"{w}x{h}"
+            del image_np
+            liberar_memoria_so()
+            return result
+
+        todos_textos = list(result.get("textos_encontrados", []))
+
+        # Passada 2: Filtro Anti-Moire + CLAHE (corrige grade de pixels de monitor e reflexo)
+        img_enhanced = self.apply_screen_enhancement(image_np)
+        res_enhanced = self._run_ocr_pass(img_enhanced, mag_ratio=1.2)
+        if res_enhanced.get("encontrada"):
+            res_enhanced["dimensoes_processadas"] = f"{w}x{h} (anti-moire)"
+            del image_np, img_enhanced
+            liberar_memoria_so()
+            return res_enhanced
+        todos_textos.extend(res_enhanced.get("textos_encontrados", []))
+
+        # Passada 3: Zoom na regiao central com filtro Anti-Moire (para fotos de celular mais distantes)
+        img_center = self.get_center_crop_zoom(img_enhanced)
+        res_center = self._run_ocr_pass(img_center, mag_ratio=1.2)
+        del img_center
+        if res_center.get("encontrada"):
+            res_center["dimensoes_processadas"] = f"{w}x{h} (center-zoom)"
+            del image_np, img_enhanced
+            liberar_memoria_so()
+            return res_center
+        todos_textos.extend(res_center.get("textos_encontrados", []))
+
+        # Passada 4: Se nada foi encontrado (ou quase nenhum texto lido), testa rotacoes 90° e 270°
+        # (resolve fotos de celular enviadas deitadas pelo mobile/Laravel sem metadados EXIF)
+        for rot_code, rot_label in (
+            (cv2.ROTATE_90_CLOCKWISE, "rot90"),
+            (cv2.ROTATE_90_COUNTERCLOCKWISE, "rot270"),
+        ):
+            img_rot = cv2.rotate(img_enhanced, rot_code)
+            res_rot = self._run_ocr_pass(img_rot, mag_ratio=1.0)
+            del img_rot
+            if res_rot.get("encontrada"):
+                res_rot["dimensoes_processadas"] = f"{w}x{h} ({rot_label})"
+                del image_np, img_enhanced
+                liberar_memoria_so()
+                return res_rot
+            todos_textos.extend(res_rot.get("textos_encontrados", []))
 
         # Limpa memoria residual de arrays
-        del image_np
+        del image_np, img_enhanced
         liberar_memoria_so()
+
+        result["textos_encontrados"] = todos_textos
+        result["dimensoes_processadas"] = f"{w}x{h}"
         return result
 
 

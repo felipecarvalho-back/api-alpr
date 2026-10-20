@@ -65,3 +65,14 @@ def test_fallback_plate_detection_trigger():
     assert resultado["placa"] == "FJB4E12"
     assert resultado["padrao"] == "Mercosul"
 
+
+def test_screen_enhancement_and_center_zoom():
+    img_np = np.random.randint(0, 255, (400, 600, 3), dtype=np.uint8)
+    enhanced = OCRService.apply_screen_enhancement(img_np)
+    assert enhanced.shape == (400, 600, 3)
+
+    zoomed = OCRService.get_center_crop_zoom(enhanced)
+    # 60% da altura (240) e 70% da largura (420), ampliado em 1.4x = 336x588
+    assert zoomed.shape == (336, 588, 3)
+
+

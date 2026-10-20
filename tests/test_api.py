@@ -171,6 +171,29 @@ def test_detectar_placa_arquivo_nao_imagem():
     assert response.status_code == 400
 
 
+def test_detectar_placa_repasse_laravel_octet_stream_sem_extensao():
+    """Garante que arquivos temporarios do PHP/Laravel (ex: php8A2F.tmp com application/octet-stream) sejam aceitos."""
+    token = criar_token_acesso({"sub": "laravel-api"})
+    img_bytes = gerar_imagem_bytes()
+
+    with patch("app.main.ocr_service.detect_plate") as mock_detect:
+        mock_detect.return_value = {
+            "encontrada": True,
+            "placa": "MER1C23",
+            "placa_formatada": "MER1C23",
+            "padrao": "Mercosul",
+            "confianca": 0.91
+        }
+
+        response = client.post(
+            "/detectar-placa",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("php8A2F.tmp", img_bytes, "application/octet-stream")}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"placa": "MER1C23"}
+
+
 def test_cors_preflight():
     response = client.options(
         "/detectar-placa",
