@@ -1,6 +1,6 @@
 # API de Reconhecimento de Placas com FastAPI, EasyOCR e Docker
 
-API de alta performance em Python desenvolvida para processar fotos de veículos enviadas por aplicativos móveis ou web, identificar a placa brasileira (**Mercosul** ou **Padrão Antigo**) com OCR avançado, validar requisições via **Token JWT** e retornar **somente a placa identificada**.
+API de alta performance em Python desenvolvida para processar fotos de veículos enviadas por aplicativos móveis ou web, identificar a placa brasileira (**Mercosul** ou **Padrão Antigo**) com OCR avançado, validar requisições via **Token JWT** e retornar a placa identificada com status amigável de detecção (sem quebrar a requisição quando nenhuma placa for encontrada).
 
 Pronta para execução em contêineres **Docker** e hospedagem simplificada no **Render**.
 
@@ -169,6 +169,13 @@ Envia uma imagem de veículo para identificação da placa.
 **Body:**
 - `file`: Arquivo de imagem (JPEG, PNG, WEBP, etc.)
 
+#### Estrutura do JSON de Resposta:
+| Campo | Tipo | Descrição |
+| :--- | :--- | :--- |
+| `placa` | `string \| null` | Caracteres da placa em maiúsculo (sem hífen/pontuação), ou `null` se nenhuma placa for identificada. |
+| `encontrada` | `boolean` | `true` quando uma placa válida for identificada; `false` caso contrário. |
+| `mensagem` | `string` | Descrição informativa sobre o resultado da análise. |
+
 **Exemplo de Resposta - Placa identificada (HTTP 200):**
 ```json
 {
@@ -188,7 +195,10 @@ Envia uma imagem de veículo para identificação da placa.
   "mensagem": "Nenhuma placa veicular valida foi identificada na imagem."
 }
 ```
-> **Nota**: Ao invés de disparar erro HTTP 404 (que interrompe chamadas em bibliotecas como Axios, cURL e Laravel Http), a API retorna HTTP 200 informando `"encontrada": false` e `"placa": null` para que o frontend/cliente possa tratar a mensagem amigavelmente.
+> [!IMPORTANT]
+> **Mudança na Resposta (HTTP 200 ao invés de HTTP 404):**
+> - **Comportamento anterior**: Quando nenhuma placa era identificada, a API disparava erro **HTTP 404**. Isso interrompia a requisição com exceções em clientes HTTP (como Laravel `Http::post`, Axios e cURL) e impedia a aplicação de salvar o registro de passagem do veículo.
+> - **Comportamento atual**: A API retorna **HTTP 200** com `"placa": null` e `"encontrada": false`. Dessa forma, o backend consumidor consegue **salvar o registro no banco de dados mesmo sem a placa** (gravando o campo de placa como `null` ou fallback do sistema), registrando a foto da câmera, o horário e o operador normalmente para posterior validação ou correção manual na guarita.
 
 **Exemplo de Resposta quando o token for inválido ou ausente (HTTP 401):**
 ```json
@@ -236,11 +246,59 @@ const identificarPlaca = async (uriDaImagem, tokenJwt) => {
 
   if (resposta.ok) {
     const dados = await resposta.json();
-    console.log("Placa identificada:", dados.placa);
-    return dados.placa;
+    if (dados.encontrada) {
+      console.log("Placa identificada:", dados.placa);
+      return dados.placa; // ex: "BRA2E19"
+    } else {
+      console.warn("Nenhuma placa identificada:", dados.mensagem);
+      return null; // permite salvar o registro no banco com placa null
+    }
   } else {
     const erro = await resposta.json();
     console.error("Erro:", erro.detail);
   }
 };
+```
+
+
+---
+
+### PHP / Laravel (Http Client)
+Exemplo prático de integração com Laravel que envia a foto e cadastra o registro de acesso no banco de dados mesmo quando nenhuma placa for encontrada (salvando o campo da placa como `null`):
+
+```php
+use Illuminate\Support\Facades\Http;
+use App\Models\RegistroAcesso;
+
+public function processarPassagem(string $caminhoFoto, ?string $nomeFoto = null): RegistroAcesso
+{
+    $urlApi = config('services.python_api.url');
+    $token = config('services.python_api.token');
+
+    $response = Http::timeout(60)
+        ->withToken($token)
+        ->attach('file', file_get_contents($caminhoFoto), $nomeFoto ?? basename($caminhoFoto))
+        ->post("{$urlApi}/detectar-placa");
+
+    $placaDetectada = null;
+
+    if ($response->successful()) {
+        $dados = $response->json();
+
+        // Se a placa foi identificada pelo OCR, captura o valor; se não, permanece null
+        if (! empty($dados['encontrada']) && ! empty($dados['placa'])) {
+            $placaDetectada = strtoupper(trim($dados['placa']));
+        }
+    }
+
+    // Cadastra o registro no banco de dados mesmo sem a placa (salva a placa como null)
+    return RegistroAcesso::create([
+        'placa_registro'    => $placaDetectada, // salva "BRA2E19" ou NULL
+        'foto_entrada_path' => $caminhoFoto,
+        'status'            => $placaDetectada ? 'pendente' : 'nao_cadastrado',
+        'justificativa'     => $placaDetectada 
+            ? 'Placa identificada no banco' 
+            : 'Placa não identificada automaticamente pelo OCR',
+    ]);
+}
 ```
