@@ -113,8 +113,9 @@ def test_detectar_placa_sucesso_retorna_apenas_placa():
 
         assert response.status_code == 200
         dados = response.json()
-        # Garante que a resposta contem exatamente e somente a placa identificada
-        assert dados == {"placa": "BRA2E19"}
+        assert dados["placa"] == "BRA2E19"
+        assert dados["encontrada"] is True
+        assert "mensagem" in dados
 
 
 def test_detectar_placa_com_token_no_form():
@@ -137,7 +138,8 @@ def test_detectar_placa_com_token_no_form():
         )
 
         assert response.status_code == 200
-        assert response.json() == {"placa": "ABC1234"}
+        assert response.json()["placa"] == "ABC1234"
+        assert response.json()["encontrada"] is True
 
 
 def test_detectar_placa_nao_encontrada():
@@ -157,8 +159,12 @@ def test_detectar_placa_nao_encontrada():
             files={"file": ("carro.jpg", img_bytes, "image/jpeg")}
         )
 
-        assert response.status_code == 404
-        assert "Nenhuma placa veicular valida foi identificada" in response.json()["detail"]
+        # Retorna 200 com status indicando que nenhuma placa foi identificada (evita 404 em clientes)
+        assert response.status_code == 200
+        dados = response.json()
+        assert dados["placa"] is None
+        assert dados["encontrada"] is False
+        assert "Nenhuma placa veicular valida foi identificada" in dados["mensagem"]
 
 
 def test_detectar_placa_arquivo_nao_imagem():
@@ -191,7 +197,8 @@ def test_detectar_placa_repasse_laravel_octet_stream_sem_extensao():
             files={"file": ("php8A2F.tmp", img_bytes, "application/octet-stream")}
         )
         assert response.status_code == 200
-        assert response.json() == {"placa": "MER1C23"}
+        assert response.json()["placa"] == "MER1C23"
+        assert response.json()["encontrada"] is True
 
 
 def test_cors_preflight():

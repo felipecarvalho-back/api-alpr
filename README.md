@@ -160,7 +160,7 @@ Gera um token JWT para testes ou integração. É possível gerar tokens tempor�
 ---
 
 ### 2. `POST /detectar-placa`
-Envia uma imagem de veículo e recebe **somente a placa identificada**.
+Envia uma imagem de veículo para identificação da placa.
 
 **Headers:**
 - `Authorization: Bearer <seu_token_jwt>`
@@ -169,21 +169,26 @@ Envia uma imagem de veículo e recebe **somente a placa identificada**.
 **Body:**
 - `file`: Arquivo de imagem (JPEG, PNG, WEBP, etc.)
 
-**Exemplo de Resposta (HTTP 200):**
+**Exemplo de Resposta - Placa identificada (HTTP 200):**
 ```json
 {
-  "placa": "BRA2E19"
+  "placa": "BRA2E19",
+  "encontrada": true,
+  "mensagem": "Placa detectada com sucesso."
 }
 ```
 
-*(Se a imagem contiver uma placa no padrão antigo, ex: `ABC1234`, retornará `{"placa": "ABC1234"}`)*
+*(Se a imagem contiver uma placa no padrão antigo, ex: `ABC1234`, o campo `"placa"` virá `"ABC1234"`)*
 
-**Exemplo de Resposta quando nenhuma placa é encontrada (HTTP 404):**
+**Exemplo de Resposta - Nenhuma placa encontrada (HTTP 200):**
 ```json
 {
-  "detail": "Nenhuma placa veicular valida foi identificada na imagem."
+  "placa": null,
+  "encontrada": false,
+  "mensagem": "Nenhuma placa veicular valida foi identificada na imagem."
 }
 ```
+> **Nota**: Ao invés de disparar erro HTTP 404 (que interrompe chamadas em bibliotecas como Axios, cURL e Laravel Http), a API retorna HTTP 200 informando `"encontrada": false` e `"placa": null` para que o frontend/cliente possa tratar a mensagem amigavelmente.
 
 **Exemplo de Resposta quando o token for inválido ou ausente (HTTP 401):**
 ```json

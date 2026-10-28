@@ -81,8 +81,10 @@ def enviar_imagem(
             response_data = json.loads(resp.read().decode("utf-8"))
             print(f"\nStatus: {status_code}")
             print(f"Resposta JSON: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-            if "placa" in response_data:
+            if response_data.get("placa"):
                 print(f"\n>>> PLACA DETECTADA: {response_data['placa']} <<<\n")
+            else:
+                print(f"\n>>> AVISO: {response_data.get('mensagem', 'Nenhuma placa identificada')} <<<\n")
     except urllib.error.HTTPError as e:
         print(f"\nErro HTTP {e.code}: {e.reason}")
         print(e.read().decode("utf-8"))

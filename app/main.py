@@ -51,10 +51,20 @@ app.add_middleware(
 
 
 class RespostaPlaca(BaseModel):
-    placa: str = Field(
+    placa: Optional[str] = Field(
+        None,
+        description="Placa veicular identificada (sem tracos ou pontuacoes), ou null se nao identificada",
+        examples=["ABC1D23", "ABC1234", None]
+    )
+    encontrada: bool = Field(
         ...,
-        description="Placa veicular identificada (sem tracos ou pontuacoes)",
-        examples=["ABC1D23", "ABC1234"]
+        description="Indica se uma placa veicular valida foi identificada na imagem",
+        examples=[True, False]
+    )
+    mensagem: str = Field(
+        ...,
+        description="Mensagem descritiva sobre o resultado da analise",
+        examples=["Placa detectada com sucesso.", "Nenhuma placa veicular valida foi identificada na imagem."]
     )
 
 
@@ -161,16 +171,21 @@ async def detectar_placa(
                 f"(padrao={resultado.get('padrao')}, conf={resultado.get('confianca')}, "
                 f"dim={resultado.get('dimensoes_processadas')})"
             )
-            return RespostaPlaca(placa=resultado["placa"])
+            return RespostaPlaca(
+                placa=resultado["placa"],
+                encontrada=True,
+                mensagem="Placa detectada com sucesso."
+            )
         else:
             textos_lidos = [t.get("texto") for t in resultado.get("textos_encontrados", [])]
             logger.warning(
                 f"Nenhuma placa valida identificada. Dimensoes={resultado.get('dimensoes_processadas')}, "
                 f"Textos brutos lidos pelo OCR={textos_lidos}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Nenhuma placa veicular valida foi identificada na imagem."
+            return RespostaPlaca(
+                placa=None,
+                encontrada=False,
+                mensagem="Nenhuma placa veicular valida foi identificada na imagem."
             )
 
     except HTTPException:
