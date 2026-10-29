@@ -132,7 +132,6 @@ class OCRService:
         """
         img_h, img_w = image_np.shape[:2]
         candidatos = []
-        candidatos_caixas = []
 
         for item in raw_results:
             bbox, text, prob = item
@@ -149,26 +148,10 @@ class OCRService:
             aspect_ratio = bw / float(bh)
             clean = "".join(c for c in str(text).upper() if c.isalnum())
 
-            # Ignora palavras de cabecalho comum (faixa azul) que nao sao o corpo da placa
-            if clean in {"BRASIL", "MERCOSUL", "OSUL", "BR"}:
-                continue
-
             # Considera suspeitas caixas com entre 2 e 9 caracteres ou com formato largo de placa
             if not ((2 <= len(clean) <= 9) or (aspect_ratio >= 1.5)):
                 continue
 
-            # Prioriza caixas com mistura de letras e numeros ou tamanho compativel com placa (4 a 8 caracteres)
-            has_letter = any(c.isalpha() for c in clean)
-            has_digit = any(c.isdigit() for c in clean)
-            score_relevancia = (2 if (has_letter and has_digit) else 0) + (2 if 4 <= len(clean) <= 8 else 0) + float(prob)
-
-            candidatos_caixas.append((score_relevancia, x_min, y_min, x_max, y_max, bh))
-
-        # Limita o fallback aos 3 recortes mais promissores para evitar degradacao de performance
-        candidatos_caixas.sort(key=lambda c: c[0], reverse=True)
-        top_caixas = candidatos_caixas[:3]
-
-        for _, x_min, y_min, x_max, y_max, bh in top_caixas:
             cortes = [
                 # 1. Mercosul: corta 16% do topo (faixa azul) e 10px da esquerda (QR/BR)
                 (min(img_w - 20, x_min + 10), min(y_max - 10, y_min + int(bh * 0.16)), x_max, y_max, "mercosul_crop"),
@@ -286,23 +269,21 @@ class OCRService:
             return res_center
         todos_textos.extend(res_center.get("textos_encontrados", []))
 
-        # Passada 4: Se nada foi encontrado E nenhum/poucos textos foram lidos na orientacao normal,
-        # testa rotacoes 90° e 270° (resolve fotos de celular enviadas deitadas sem metadados EXIF).
-        # Se ja lemos varios textos na horizontal, a orientacao esta correta e evita desperdicio de CPU.
-        if len(todos_textos) <= 2:
-            for rot_code, rot_label in (
-                (cv2.ROTATE_90_CLOCKWISE, "rot90"),
-                (cv2.ROTATE_90_COUNTERCLOCKWISE, "rot270"),
-            ):
-                img_rot = cv2.rotate(img_enhanced, rot_code)
-                res_rot = self._run_ocr_pass(img_rot, mag_ratio=1.0)
-                del img_rot
-                if res_rot.get("encontrada"):
-                    res_rot["dimensoes_processadas"] = f"{w}x{h} ({rot_label})"
-                    del image_np, img_enhanced
-                    liberar_memoria_so()
-                    return res_rot
-                todos_textos.extend(res_rot.get("textos_encontrados", []))
+        # Passada 4: Se nada foi encontrado (ou quase nenhum texto lido), testa rotacoes 90° e 270°
+        # (resolve fotos de celular enviadas deitadas pelo mobile/Laravel sem metadados EXIF)
+        for rot_code, rot_label in (
+            (cv2.ROTATE_90_CLOCKWISE, "rot90"),
+            (cv2.ROTATE_90_COUNTERCLOCKWISE, "rot270"),
+        ):
+            img_rot = cv2.rotate(img_enhanced, rot_code)
+            res_rot = self._run_ocr_pass(img_rot, mag_ratio=1.0)
+            del img_rot
+            if res_rot.get("encontrada"):
+                res_rot["dimensoes_processadas"] = f"{w}x{h} ({rot_label})"
+                del image_np, img_enhanced
+                liberar_memoria_so()
+                return res_rot
+            todos_textos.extend(res_rot.get("textos_encontrados", []))
 
         # Limpa memoria residual de arrays
         del image_np, img_enhanced
