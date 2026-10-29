@@ -64,15 +64,16 @@ class OCRService:
             liberar_memoria_so()
             logger.info("Modelo EasyOCR carregado com sucesso na memoria.")
 
-    def preprocess_image(self, image_bytes: bytes) -> np.ndarray:
+    def preprocess_image(self, image_bytes: bytes, apply_exif: bool = True) -> np.ndarray:
         """
-        Carrega imagem de bytes, ajusta orientacao EXIF e
+        Carrega imagem de bytes, ajusta orientacao EXIF (se solicitado) e
         redimensiona proporcionalmente para manter consumo de RAM minimo.
         """
         pil_image = Image.open(io.BytesIO(image_bytes))
 
-        # Corrige rotacao de fotos de celular
-        pil_image = ImageOps.exif_transpose(pil_image)
+        # Corrige rotacao de fotos de celular quando solicitado
+        if apply_exif:
+            pil_image = ImageOps.exif_transpose(pil_image)
 
         # Converte para RGB
         if pil_image.mode != "RGB":
@@ -182,6 +183,9 @@ class OCRService:
                     )
 
                 for _, r_text, r_conf in leituras:
+                    # Exige confianca minima de 0.40 no fallback para evitar alucinacoes com ruidos
+                    if r_conf < 0.40:
+                        continue
                     found = extract_plate_from_text(r_text)
                     if found:
                         placa, padrao = found
@@ -229,16 +233,27 @@ class OCRService:
     def detect_plate(self, image_bytes: bytes) -> Dict[str, Any]:
         """
         Executa a leitura de OCR em multiplas etapas adaptativas:
-        1. Imagem original pre-processada
-        2. Filtro Anti-Moire + CLAHE (ideal para fotos tiradas da tela do PC pelo celular)
+        1. Imagem pre-processada com correcao EXIF padrao
+        1.1 Imagem em pixels brutos sem rotacao EXIF (caso o giroscopio do celular tenha gravado tag errada)
+        2. Filtro Anti-Moire + CLAHE (ideal para fotos tiradas da tela do PC pelo celular ou reflexos)
         3. Zoom central + Anti-Moire (ideal quando a placa esta pequena no centro da foto do celular)
-        4. Rotacao 90° e 270° (caso o Laravel/Mobile tenha removido o EXIF de orientacao)
+        4. Rotacoes 90° e 270° (caso o arquivo tenha sido enviado deitado sem EXIF)
         """
         self.load_model()
-        image_np = self.preprocess_image(image_bytes)
+
+        has_exif_rotation = False
+        try:
+            im_tmp = Image.open(io.BytesIO(image_bytes))
+            exif = im_tmp.getexif()
+            if exif.get(274) in (2, 3, 4, 5, 6, 7, 8):
+                has_exif_rotation = True
+        except Exception:
+            pass
+
+        # Passada 1: Imagem com correcao EXIF padrao
+        image_np = self.preprocess_image(image_bytes, apply_exif=True)
         h, w = image_np.shape[:2]
 
-        # Passada 1: Imagem original
         result = self._run_ocr_pass(image_np, mag_ratio=1.0)
         if result.get("encontrada"):
             result["dimensoes_processadas"] = f"{w}x{h}"
@@ -247,6 +262,27 @@ class OCRService:
             return result
 
         todos_textos = list(result.get("textos_encontrados", []))
+
+        # Passada 1.1: Se falhou e havia orientacao EXIF, testa os pixels brutos sem rotacao EXIF
+        # (Resolve fotos onde o sensor gravou w > h no buffer mas o giroscopio marcou Orientation=6)
+        if has_exif_rotation:
+            image_raw_np = self.preprocess_image(image_bytes, apply_exif=False)
+            rh, rw = image_raw_np.shape[:2]
+            res_raw = self._run_ocr_pass(image_raw_np, mag_ratio=1.0)
+            if res_raw.get("encontrada"):
+                res_raw["dimensoes_processadas"] = f"{rw}x{rh} (raw-pixels)"
+                del image_np, image_raw_np
+                liberar_memoria_so()
+                return res_raw
+            todos_textos.extend(res_raw.get("textos_encontrados", []))
+            # Se os pixels brutos forem horizontais (rw > rh) e com exif ficaram verticais,
+            # os pixels brutos representam melhor a geometria natural da cena
+            if rw > rh and h > w:
+                del image_np
+                image_np = image_raw_np
+                w, h = rw, rh
+            else:
+                del image_raw_np
 
         # Passada 2: Filtro Anti-Moire + CLAHE (corrige grade de pixels de monitor e reflexo)
         img_enhanced = self.apply_screen_enhancement(image_np)
@@ -269,8 +305,9 @@ class OCRService:
             return res_center
         todos_textos.extend(res_center.get("textos_encontrados", []))
 
-        # Passada 4: Se nada foi encontrado (ou quase nenhum texto lido), testa rotacoes 90° e 270°
-        # (resolve fotos de celular enviadas deitadas pelo mobile/Laravel sem metadados EXIF)
+        # Passada 4: Se nada foi encontrado, testa rotacoes 90° e 270°
+        # Compara os candidatos encontrados e escolhe o de maior confianca
+        melhor_rot = None
         for rot_code, rot_label in (
             (cv2.ROTATE_90_CLOCKWISE, "rot90"),
             (cv2.ROTATE_90_COUNTERCLOCKWISE, "rot270"),
@@ -278,12 +315,16 @@ class OCRService:
             img_rot = cv2.rotate(img_enhanced, rot_code)
             res_rot = self._run_ocr_pass(img_rot, mag_ratio=1.0)
             del img_rot
+            todos_textos.extend(res_rot.get("textos_encontrados", []))
             if res_rot.get("encontrada"):
                 res_rot["dimensoes_processadas"] = f"{w}x{h} ({rot_label})"
-                del image_np, img_enhanced
-                liberar_memoria_so()
-                return res_rot
-            todos_textos.extend(res_rot.get("textos_encontrados", []))
+                if melhor_rot is None or res_rot.get("confianca", 0) > melhor_rot.get("confianca", 0):
+                    melhor_rot = res_rot
+
+        if melhor_rot and melhor_rot.get("confianca", 0) >= 0.40:
+            del image_np, img_enhanced
+            liberar_memoria_so()
+            return melhor_rot
 
         # Limpa memoria residual de arrays
         del image_np, img_enhanced
